@@ -4,9 +4,15 @@ import re
 
 TOKEN = re.compile(r"[a-z0-9]+")
 
+# Question words carry no retrieval signal and inflate coverage for queries that
+# should match nothing (see the out-of-corpus case in eval.py).
+STOPWORDS = frozenset("a an the is are was were be been of to in on at for with from by and or not "
+                      "what which who how does do did can could should would this that these those it its "
+                      "as if then than there their any all i my me we you your".split())
+
 
 def tokenise(text):
-    return TOKEN.findall(text.lower())
+    return [w for w in TOKEN.findall(text.lower()) if w not in STOPWORDS]
 
 
 class BM25:
@@ -39,6 +45,24 @@ class BM25:
             s += self.idf.get(w, 0.0) * num / den
         return s
 
-    def top(self, query, k=3):
-        ranked = sorted(range(len(self.docs)), key=lambda i: self.score(query, i), reverse=True)
-        return [self.docs[i] for i in ranked[:k] if self.score(query, i) > 0]
+    def top(self, query, k=3, min_coverage=0.3):
+        """Top-k documents, filtered by a relevance floor.
+
+        BM25 alone never returns nothing: any shared rare token scores > 0, so an
+        unrelated query still gets three confident-looking answers. Requiring the
+        document to cover at least `min_coverage` of the query's content words
+        (stopwords ignored) is what makes "no matches" possible.
+        """
+        q_terms = set(tokenise(query))
+        if not q_terms:
+            return []
+        scored = []
+        for i, doc in enumerate(self.docs):
+            s_ = self.score(query, i)
+            if s_ <= 0:
+                continue
+            coverage = len(q_terms & set(self.tokens[i])) / len(q_terms)
+            if coverage >= min_coverage:
+                scored.append((s_, doc))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [doc for _s, doc in scored[:k]]
